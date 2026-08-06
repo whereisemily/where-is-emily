@@ -527,7 +527,7 @@
         out.push({
           label: 'Altitude',
           value: state.live.alt ? Math.round(state.live.alt).toLocaleString() + ' ft' : '—',
-          note: state.live.gs ? Math.round(state.live.gs * 1.15078) + ' mph ground speed' : ''
+          note: 'Live ADS-B reading'
         });
       } else {
         out.push({
@@ -718,6 +718,17 @@
     var trip = selectedTrip;
     var t = tripStats(trip, now, state);
     var h = heroText(state);
+
+    if (state.phase === 'flight' && state.live) {
+      var metrics = [];
+      if (typeof state.live.gs === 'number') {
+        metrics.push(Math.round(state.live.gs * 1.15078) + ' mph ground speed');
+      }
+      if (typeof state.live.alt === 'number') {
+        metrics.push(Math.round(state.live.alt).toLocaleString() + ' ft altitude');
+      }
+      if (metrics.length) h.sub += '<br><span class="flight-metrics">' + metrics.join(' · ') + '</span>';
+    }
 
     document.getElementById('status').innerHTML = h.status;
     document.getElementById('substatus').innerHTML = h.sub;
