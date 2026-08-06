@@ -1,0 +1,49 @@
+name: Track Emily
+
+on:
+  schedule:
+    # Every 10 minutes, not GitHub's 5-minute minimum: each commit here triggers
+    # a Pages rebuild, and Pages soft-limits builds to 10/hour. 6/hour leaves
+    # headroom. The page dead-reckons forward from the last fix, so the aircraft
+    # keeps moving between polls rather than sitting frozen.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+# Only one tracker run at a time, so two runs can't race on the same commit.
+concurrency:
+  group: track
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Poll adsb.lol
+        run: node scripts/track.js
+
+      - name: Commit any new position
+        run: |
+          if [[ -z "$(git status --porcelain data/live.json)" ]]; then
+            echo "No change."
+            exit 0
+          fi
+          git config user.name  "emily-tracker[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/live.json
+          git commit -m "Update Emily's position [skip ci]"
+          # The 5-minute cron can collide with a manual push; rebase and retry.
+          for i in 1 2 3; do
+            git pull --rebase --autostash && git push && exit 0
+            sleep 5
+          done
+          echo "Could not push after 3 attempts" >&2
+          exit 1

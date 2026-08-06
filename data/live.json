@@ -1,0 +1,18 @@
+{
+  "updated": "2026-08-06T22:22:09.605Z",
+  "note": "Positions from adsb.lol. Absent entries mean no ground receiver could hear the aircraft.",
+  "flights": {
+    "UA382": {
+      "callsign": "UAL382",
+      "lat": 30.6397,
+      "lon": -98.8811,
+      "alt": 32000,
+      "gs": 476.1,
+      "track": 282.37,
+      "reg": "N68817",
+      "type": "B739",
+      "ts": 1786054929,
+      "source": "adsb.lol"
+    }
+  }
+}
