@@ -3,17 +3,19 @@
 A live tracker for Emily's trip from Charlotte to Wellington, New Zealand — and back
 again in October. Static site, no build step, no API keys.
 
+Hosted on **Cloudflare Pages**: <https://where-is-emily.pages.dev>
+
 ## How it works
 
 Two sources feed the page, in priority order:
 
-1. **Real ADS-B positions.** A GitHub Action polls [adsb.lol](https://adsb.lol) every
-   10 minutes for whichever flight is currently airborne and commits the result to
-   `data/live.json`. adsb.lol sends no CORS headers, so the browser can't call it
-   directly — polling server-side and committing the answer means the page reads it
-   same-origin, with no key to leak in a public repo.
+1. **Real ADS-B positions**, via the `/api/live` Cloudflare Pages Function, which
+   proxies a public ADS-B feed server-side. The feeds send no CORS headers, so the
+   browser cannot call them directly. The page passes the callsigns it already holds,
+   so the function never keeps a second copy of the itinerary to drift against.
 2. **The schedule.** When there's no recent fix, the position is dead-reckoned along
-   the great circle between the two airports.
+   the great circle between the two airports, and carried forward from the last real
+   fix using its reported track and ground speed.
 
 That fallback isn't a nicety. ADS-B is a network of volunteer ground receivers, so the
 13-hour San Francisco → Auckland leg is invisible for nearly all of it. The map should
@@ -45,13 +47,22 @@ never go blank over the Pacific.
   still counts toward the scheduled arrival.
 - **The map is centred on longitude 160°W** so the route never crosses the frame edge
   and New Zealand sits beside the US rather than a hemisphere away.
-- **Don't speed the cron back up to 5 minutes.** Every commit it makes triggers a
-  Pages rebuild, and Pages soft-limits builds to 10 per hour. Between polls the page
-  carries the last fix forward along its reported track and ground speed (capped at
-  20 minutes), so a slower cron costs very little accuracy.
-- **The Action heartbeats once a day.** GitHub disables scheduled workflows after 60
-  days of repo inactivity, and there are 73 days between arrival and the flight home,
-  so the tracker would otherwise be silently dead before the return trip.
+- **The upstream order in `functions/api/live.js` matters.** adsb.lol rate-limits by
+  source IP, and Cloudflare Workers egress from IPs shared across the whole platform,
+  so adsb.lol returns 429 to the function no matter how little it asks for — while
+  answering a home connection perfectly. That is why there are three upstreams and
+  why adsb.lol is last. If positions ever stop appearing, call
+  `/api/live?cs=UAL382` directly: the `trace` array in a `found:false` response
+  reports what each upstream said.
+- **The GitHub Action and `data/live.json` are legacy**, kept only as a fallback path
+  for a static host with no functions. The workflow is disabled; the Cloudflare
+  function replaced it and gives fresher positions.
+
+## Deploying
+
+    npx wrangler pages deploy <folder> --project-name where-is-emily --branch main
+
+Only `index.html`, `app.js`, `robots.txt`, `data/` and `functions/` need to ship.
 
 ## Running locally
 

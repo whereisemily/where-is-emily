@@ -13,7 +13,20 @@
 
 const CALLSIGN = /^[A-Z0-9]{3,8}$/;
 const MAX_CANDIDATES = 4;
-const UPSTREAM = 'https://api.adsb.lol/v2/callsign/';
+
+/* Several upstreams, tried in order.
+ *
+ * adsb.lol rate-limits by source IP, and Cloudflare Workers egress from IPs
+ * shared across the whole platform - so it answers a home connection fine while
+ * returning 429 to this function regardless of how little we ask for. These
+ * feeds are all tar1090-derived and return the same {ac:[...]} shape, so
+ * failing over between them costs nothing but makes the endpoint far more
+ * robust than any single source. */
+const UPSTREAMS = [
+  { name: 'adsb.fi', url: cs => 'https://opendata.adsb.fi/api/v2/callsign/' + cs },
+  { name: 'airplanes.live', url: cs => 'https://api.airplanes.live/v2/callsign/' + cs },
+  { name: 'adsb.lol', url: cs => 'https://api.adsb.lol/v2/callsign/' + cs }
+];
 
 function json(body, status = 200, maxAge = 30) {
   return new Response(JSON.stringify(body), {
@@ -49,44 +62,58 @@ export async function onRequest({ request }) {
     return json({ error: 'expected ?cs= one to four A-Z0-9 callsigns' }, 400, 0);
   }
 
+  // Kept so a silent upstream refusal is diagnosable instead of looking
+  // identical to "no receiver heard the aircraft".
+  const trace = [];
+
   for (const cs of candidates) {
-    let res;
-    try {
-      res = await fetch(UPSTREAM + encodeURIComponent(cs), {
-        headers: { 'user-agent': 'where-is-emily/1.0 (personal flight tracker)' },
-        cf: { cacheTtl: 20, cacheEverything: true }
+    for (const src of UPSTREAMS) {
+      let res;
+      try {
+        res = await fetch(src.url(encodeURIComponent(cs)), {
+          headers: { 'user-agent': 'where-is-emily/1.0 (personal flight tracker)' },
+          cf: { cacheTtl: 20, cacheEverything: true }
+        });
+      } catch (e) {
+        trace.push({ cs, src: src.name, error: String(e && e.message || e).slice(0, 100) });
+        continue;   // upstream hiccup: try the next source
+      }
+      if (!res.ok) {
+        trace.push({ cs, src: src.name, status: res.status });
+        continue;
+      }
+
+      let feed;
+      try {
+        feed = await res.json();
+      } catch (e) {
+        trace.push({ cs, src: src.name, parse: 'not json' });
+        continue;
+      }
+
+      const ac = bestAircraft(feed && feed.ac);
+      if (!ac) {
+        trace.push({ cs, src: src.name, heard: 0 });
+        continue;
+      }
+
+      return json({
+        found: true,
+        callsign: cs,
+        source: src.name,
+        lat: +ac.lat.toFixed(4),
+        lon: +ac.lon.toFixed(4),
+        alt: typeof ac.alt_baro === 'number' ? ac.alt_baro : null,
+        gs: typeof ac.gs === 'number' ? ac.gs : null,
+        track: typeof ac.track === 'number' ? ac.track : null,
+        reg: ac.r || null,
+        type: ac.t || null,
+        ts: Math.round((feed.now || Date.now()) / 1000 - (ac.seen_pos || 0))
       });
-    } catch {
-      continue;   // upstream hiccup: try the next callsign
     }
-    if (!res.ok) continue;
-
-    let feed;
-    try {
-      feed = await res.json();
-    } catch {
-      continue;
-    }
-
-    const ac = bestAircraft(feed && feed.ac);
-    if (!ac) continue;
-
-    return json({
-      found: true,
-      callsign: cs,
-      lat: +ac.lat.toFixed(4),
-      lon: +ac.lon.toFixed(4),
-      alt: typeof ac.alt_baro === 'number' ? ac.alt_baro : null,
-      gs: typeof ac.gs === 'number' ? ac.gs : null,
-      track: typeof ac.track === 'number' ? ac.track : null,
-      reg: ac.r || null,
-      type: ac.t || null,
-      ts: Math.round((feed.now || Date.now()) / 1000 - (ac.seen_pos || 0)),
-      source: 'adsb.lol'
-    });
   }
 
   // Nothing heard. Over open ocean this is the normal case, not an error, so
   // it is cached briefly and the page falls back to dead reckoning.
-  return json({ found: false }, 200, 20);
+  return json({ found: false, trace }, 200, 20);
 }
