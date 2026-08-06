@@ -12,7 +12,9 @@
  */
 
 const CALLSIGN = /^[A-Z0-9]{3,8}$/;
+const LEG = /^[A-Z0-9]{2,16}$/;
 const MAX_CANDIDATES = 4;
+const TRAIL_PREFIX = 'trail:';
 
 /* Several upstreams, tried in order.
  *
@@ -50,21 +52,35 @@ const TRACE = hex =>
 
 const MAX_TRAIL_POINTS = 220;
 
+function validHex(hex) {
+  return typeof hex === 'string' && /^[0-9a-f]{6}$/i.test(hex);
+}
+
 /**
  * The trace covers the whole day and several flights of the same airframe.
  * Everything after the last on-ground point is the flight it is on now.
  */
-function trailFromTrace(feed) {
+function trailFromTrace(feed, completed = false) {
   const pts = Array.isArray(feed && feed.trace) ? feed.trace : [];
   if (pts.length < 2) return null;
 
+  // Once the aircraft has landed, tar1090 continues with ground points. Find
+  // the last airborne point, but retain the first touchdown point as the
+  // trail's endpoint so a saved leg reaches the destination.
+  let end = pts.length - 1;
+  if (completed) {
+    while (end >= 0 && pts[end][3] === 'ground') end--;
+    if (end < 1) return null;
+  }
+
   let start = 0;
-  for (let i = pts.length - 1; i >= 0; i--) {
+  for (let i = end; i >= 0; i--) {
     const alt = pts[i][3];
     if (alt === 'ground' || (typeof alt === 'number' && alt < 500)) { start = i; break; }
   }
 
-  const seg = pts.slice(start).filter(p => typeof p[1] === 'number' && typeof p[2] === 'number');
+  const segEnd = completed && end < pts.length - 1 ? end + 1 : end;
+  const seg = pts.slice(start, segEnd + 1).filter(p => typeof p[1] === 'number' && typeof p[2] === 'number');
   if (seg.length < 2) return null;
 
   // Even sampling, but never drop the newest point - that is where the
@@ -82,18 +98,59 @@ function trailFromTrace(feed) {
   return out.length >= 2 ? out : null;
 }
 
-async function fetchTrail(hex, trace) {
-  if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return null;
+async function fetchTrail(hex, trace, completed = false) {
+  if (!validHex(hex)) return null;
   try {
     const res = await fetch(TRACE(hex.toLowerCase()), {
       headers: { 'user-agent': 'where-is-emily/1.0 (personal flight tracker)' },
       cf: { cacheTtl: 30, cacheEverything: true }
     });
     if (!res.ok) { trace.push({ trail: 'trace', status: res.status }); return null; }
-    return trailFromTrace(await res.json());
+    return trailFromTrace(await res.json(), completed);
   } catch (e) {
     trace.push({ trail: 'trace', error: String(e && e.message || e).slice(0, 100) });
     return null;
+  }
+}
+
+async function readSavedTrails(env, trace) {
+  const store = env && env.FLIGHT_TRAILS;
+  if (!store) return {};
+
+  try {
+    const listed = await store.list({ prefix: TRAIL_PREFIX });
+    const entries = await Promise.all(listed.keys.map(async key => {
+      const value = await store.get(key.name, 'json');
+      return value && Array.isArray(value.trail) ? [key.name.slice(TRAIL_PREFIX.length), value.trail] : null;
+    }));
+    return Object.fromEntries(entries.filter(Boolean));
+  } catch (e) {
+    trace.push({ trailStore: String(e && e.message || e).slice(0, 100) });
+    return {};
+  }
+}
+
+async function saveTrail(env, leg, trail, meta) {
+  const store = env && env.FLIGHT_TRAILS;
+  if (!store || !LEG.test(leg) || !Array.isArray(trail) || trail.length < 2) return false;
+
+  try {
+    const key = TRAIL_PREFIX + leg;
+    // The first successful save wins. Repeated viewers and refreshes therefore
+    // do not create a write storm or replace a complete trail with a bad one.
+    if (await store.get(key)) return false;
+
+    await store.put(key, JSON.stringify({
+      leg,
+      trail,
+      callsign: meta.callsign || null,
+      hex: meta.hex || null,
+      savedAt: new Date().toISOString()
+    }));
+    return true;
+  } catch {
+    // KV is an enhancement; a binding outage must not hide live position data.
+    return false;
   }
 }
 
@@ -106,7 +163,7 @@ function bestAircraft(list) {
   return withPos.sort((a, b) => (a.seen_pos ?? 999) - (b.seen_pos ?? 999))[0];
 }
 
-export async function onRequest({ request }) {
+export async function onRequest({ request, env }) {
   const url = new URL(request.url);
   const candidates = (url.searchParams.get('cs') || '')
     .toUpperCase()
@@ -119,9 +176,22 @@ export async function onRequest({ request }) {
     return json({ error: 'expected ?cs= one to four A-Z0-9 callsigns' }, 400, 0);
   }
 
+  const leg = (url.searchParams.get('leg') || '').toUpperCase();
+  const arrivalMs = Number(url.searchParams.get('arr'));
+  const finalizing = url.searchParams.get('finalize') === '1';
+  const fallbackHex = (url.searchParams.get('hex') || '').toLowerCase();
+  const canFinalize = finalizing && LEG.test(leg) && Number.isFinite(arrivalMs) && Date.now() >= arrivalMs;
+
   // Kept so a silent upstream refusal is diagnosable instead of looking
   // identical to "no receiver heard the aircraft".
   const trace = [];
+  const trails = await readSavedTrails(env, trace);
+
+  async function response(body, status = 200) {
+    return json(Object.assign({ trails }, body), status, canFinalize ? 0 : 30);
+  }
+
+  if (canFinalize && trails[leg]) return response({ found: false, saved: true });
 
   for (const cs of candidates) {
     for (const src of UPSTREAMS) {
@@ -155,7 +225,7 @@ export async function onRequest({ request }) {
       }
 
       // A missing trail is not fatal — the page falls back to the great circle.
-      const trail = await fetchTrail(ac.hex, trace);
+      const trail = await fetchTrail(ac.hex, trace, canFinalize);
 
       // The trace file lags the live feed by a few minutes, so it stops short
       // of where the aircraft actually is. Extend it to the live fix, or the
@@ -166,7 +236,11 @@ export async function onRequest({ request }) {
         if (end[0] !== here[0] || end[1] !== here[1]) trail.push(here);
       }
 
-      return json({
+      if (canFinalize && trail && await saveTrail(env, leg, trail, { callsign: cs, hex: ac.hex })) {
+        trails[leg] = trail;
+      }
+
+      return response({
         found: true,
         callsign: cs,
         source: src.name,
@@ -185,7 +259,17 @@ export async function onRequest({ request }) {
     }
   }
 
+  // The aircraft may have disappeared from the live feed immediately after
+  // parking. The browser supplies the last known hex from the same page load,
+  // so the trace can still be fetched and finalized without trusting its path.
+  if (canFinalize && validHex(fallbackHex) && !trails[leg]) {
+    const trail = await fetchTrail(fallbackHex, trace, true);
+    if (trail && await saveTrail(env, leg, trail, { callsign: candidates[0], hex: fallbackHex })) {
+      trails[leg] = trail;
+    }
+  }
+
   // Nothing heard. Over open ocean this is the normal case, not an error, so
   // it is cached briefly and the page falls back to dead reckoning.
-  return json({ found: false, trace }, 200, 20);
+  return response({ found: false, trace }, 200);
 }

@@ -414,9 +414,10 @@
                : isCurrent ? state.frac
                : (now - f.depMs) / (f.arrMs - f.depMs);
 
-      // The real flown track, when the ADS-B trace gave us one. This is the
-      // actual path — departure turns and all — not the idealised great circle.
-      var trail = isCurrent && state.live && state.live.trail;
+      // Prefer the saved real track for completed legs; the current leg uses
+      // the live trace until the API finalizes it after landing.
+      var savedTrail = liveData && liveData.trails && liveData.trails[f.n];
+      var trail = (isCurrent && state.live && state.live.trail) || savedTrail;
 
       // remaining portion — dashed. From the aircraft's real position when we
       // know it, so the dashed line meets the plane instead of the route line.
@@ -770,18 +771,33 @@
    * If neither answers, dead reckoning from the schedule carries the map. */
   function fetchLive() {
     var state = computeState(Date.now());
-    if (state.phase !== 'flight') return;   // nothing airborne to ask about
+    if (state.phase === 'pre') return;      // nothing airborne to ask about
     var f = state.flight;
+    var finalizing = state.phase !== 'flight';
+    var previous = liveData && liveData.flights && liveData.flights[f.n];
+    var query = 'api/live?cs=' + f.callsigns.join(',') +
+      '&leg=' + encodeURIComponent(f.n) +
+      '&arr=' + encodeURIComponent(f.arrMs) +
+      '&finalize=' + (finalizing ? '1' : '0') +
+      (previous && /^[0-9a-f]{6}$/i.test(previous.hex || '') ? '&hex=' + previous.hex : '') +
+      '&t=' + Date.now();
 
-    fetch('api/live?cs=' + f.callsigns.join(',') + '&t=' + Date.now(), { cache: 'no-store' })
+    fetch(query, { cache: 'no-store' })
       .then(function (r) {
         if (!r.ok) throw new Error('no proxy here');
         return r.json();
       })
       .then(function (j) {
+        if (j && j.trails) {
+          liveData = liveData || { flights: {} };
+          liveData.trails = j.trails;
+          render();
+        }
         // found:false is the ordinary mid-ocean answer, not a failure.
         if (!j || j.found === false || typeof j.lat !== 'number') return;
-        var next = { updated: new Date().toISOString(), flights: {} };
+        var next = liveData || { updated: new Date().toISOString(), flights: {} };
+        next.updated = new Date().toISOString();
+        next.flights = next.flights || {};
         next.flights[f.n] = j;
         liveData = next;
         render();
