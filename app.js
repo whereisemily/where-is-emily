@@ -746,11 +746,37 @@
     document.getElementById('btn-home').setAttribute('aria-pressed', String(selectedTrip === 'home'));
   }
 
+  /* Two ways to get a position, tried in order:
+   *   1. /api/live — the Cloudflare Pages Function proxying adsb.lol live.
+   *   2. data/live.json — a file a cron may be committing, for plain static
+   *      hosts where no function exists.
+   * If neither answers, dead reckoning from the schedule carries the map. */
   function fetchLive() {
+    var state = computeState(Date.now());
+    if (state.phase !== 'flight') return;   // nothing airborne to ask about
+    var f = state.flight;
+
+    fetch('api/live?cs=' + f.callsigns.join(',') + '&t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('no proxy here');
+        return r.json();
+      })
+      .then(function (j) {
+        // found:false is the ordinary mid-ocean answer, not a failure.
+        if (!j || j.found === false || typeof j.lat !== 'number') return;
+        var next = { updated: new Date().toISOString(), flights: {} };
+        next.flights[f.n] = j;
+        liveData = next;
+        render();
+      })
+      .catch(fetchLiveFile);
+  }
+
+  function fetchLiveFile() {
     fetch('data/live.json?t=' + Date.now(), { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) { if (j) { liveData = j; render(); } })
-      .catch(function () { /* no live file yet — schedule mode is the fallback */ });
+      .catch(function () { /* neither source available — schedule mode */ });
   }
 
   document.getElementById('btn-out').addEventListener('click', function () {
