@@ -40,6 +40,63 @@ function json(body, status = 200, maxAge = 30) {
   });
 }
 
+/* Where the actual flown path comes from. tar1090 keeps a per-aircraft trace
+ * for the last day, which is the real track - departure turns, the step climbs,
+ * the wind-corrected routing - rather than the idealised great circle between
+ * two airports. Only adsb.lol serves these publicly; airplanes.live and
+ * adsbexchange both 403 the trace files. */
+const TRACE = hex =>
+  'https://globe.adsb.lol/data/traces/' + hex.slice(-2) + '/trace_full_' + hex + '.json';
+
+const MAX_TRAIL_POINTS = 220;
+
+/**
+ * The trace covers the whole day and several flights of the same airframe.
+ * Everything after the last on-ground point is the flight it is on now.
+ */
+function trailFromTrace(feed) {
+  const pts = Array.isArray(feed && feed.trace) ? feed.trace : [];
+  if (pts.length < 2) return null;
+
+  let start = 0;
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const alt = pts[i][3];
+    if (alt === 'ground' || (typeof alt === 'number' && alt < 500)) { start = i; break; }
+  }
+
+  const seg = pts.slice(start).filter(p => typeof p[1] === 'number' && typeof p[2] === 'number');
+  if (seg.length < 2) return null;
+
+  // Even sampling, but never drop the newest point - that is where the
+  // aircraft actually is, and the trail has to meet the plane icon.
+  const step = Math.max(1, Math.ceil(seg.length / MAX_TRAIL_POINTS));
+  const out = [];
+  for (let i = 0; i < seg.length; i += step) {
+    out.push([+seg[i][1].toFixed(3), +seg[i][2].toFixed(3)]);
+  }
+  const last = seg[seg.length - 1];
+  const tail = [+last[1].toFixed(3), +last[2].toFixed(3)];
+  if (out.length === 0 || out[out.length - 1][0] !== tail[0] || out[out.length - 1][1] !== tail[1]) {
+    out.push(tail);
+  }
+  return out.length >= 2 ? out : null;
+}
+
+async function fetchTrail(hex, trace) {
+  if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return null;
+  try {
+    const res = await fetch(TRACE(hex.toLowerCase()), {
+      headers: { 'user-agent': 'where-is-emily/1.0 (personal flight tracker)' },
+      cf: { cacheTtl: 30, cacheEverything: true }
+    });
+    if (!res.ok) { trace.push({ trail: 'trace', status: res.status }); return null; }
+    return trailFromTrace(await res.json());
+  } catch (e) {
+    trace.push({ trail: 'trace', error: String(e && e.message || e).slice(0, 100) });
+    return null;
+  }
+}
+
 /** Freshest hit that actually carries a position. */
 function bestAircraft(list) {
   const withPos = (list || []).filter(
@@ -97,10 +154,25 @@ export async function onRequest({ request }) {
         continue;
       }
 
+      // A missing trail is not fatal — the page falls back to the great circle.
+      const trail = await fetchTrail(ac.hex, trace);
+
+      // The trace file lags the live feed by a few minutes, so it stops short
+      // of where the aircraft actually is. Extend it to the live fix, or the
+      // drawn track ends in mid-air behind the plane icon.
+      if (trail) {
+        const end = trail[trail.length - 1];
+        const here = [+ac.lat.toFixed(3), +ac.lon.toFixed(3)];
+        if (end[0] !== here[0] || end[1] !== here[1]) trail.push(here);
+      }
+
       return json({
         found: true,
         callsign: cs,
         source: src.name,
+        hex: ac.hex || null,
+        trail: trail,
+        trailNote: trail ? undefined : trace.filter(t => t.trail).slice(-1)[0],
         lat: +ac.lat.toFixed(4),
         lon: +ac.lon.toFixed(4),
         alt: typeof ac.alt_baro === 'number' ? ac.alt_baro : null,

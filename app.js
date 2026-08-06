@@ -414,16 +414,33 @@
                : isCurrent ? state.frac
                : (now - f.depMs) / (f.arrMs - f.depMs);
 
-      // remaining portion — dashed
+      // The real flown track, when the ADS-B trace gave us one. This is the
+      // actual path — departure turns and all — not the idealised great circle.
+      var trail = isCurrent && state.live && state.live.trail;
+
+      // remaining portion — dashed. From the aircraft's real position when we
+      // know it, so the dashed line meets the plane instead of the route line.
       if (frac < 1) {
-        out.push('<path d="' + gcPath(A, B, frac, 1) + '" fill="none" stroke="#ff4f9e" ' +
+        var fromHere = trail ? gcPath(state.pos, B, 0, 1) : gcPath(A, B, frac, 1);
+        out.push('<path d="' + fromHere + '" fill="none" stroke="#ff4f9e" ' +
           'stroke-width="3" stroke-dasharray="9 10" opacity=".65" stroke-linecap="round"/>');
       }
+
       // completed portion — solid, brighter while it's the active leg
       if (frac > 0) {
         var col = isCurrent ? '#d81b76' : '#9b5cff';
-        out.push('<path d="' + gcPath(A, B, 0, frac) + '" fill="none" stroke="' + col + '" ' +
-          'stroke-width="4.5" opacity=".95" stroke-linecap="round"/>');
+        var d;
+        if (trail && trail.length > 1) {
+          d = '';
+          for (var ti = 0; ti < trail.length; ti++) {
+            var tp = project(trail[ti][0], trail[ti][1]);
+            d += (ti ? 'L' : 'M') + tp[0].toFixed(1) + ' ' + tp[1].toFixed(1);
+          }
+        } else {
+          d = gcPath(A, B, 0, frac);
+        }
+        out.push('<path d="' + d + '" fill="none" stroke="' + col + '" ' +
+          'stroke-width="4.5" opacity=".95" stroke-linecap="round" stroke-linejoin="round"/>');
       }
     });
 
