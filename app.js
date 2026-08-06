@@ -317,6 +317,12 @@
     t.flightLeft = Math.max(0, t.flightTotal - t.flightDone);
     t.milesLeft = Math.max(0, t.milesTotal - t.milesDone);
     t.progress = Math.max(0, Math.min(1, (now - t.start) / (t.end - t.start)));
+
+    // Door-to-door elapsed already *is* flight time plus layovers, so take it
+    // straight off the clock rather than summing the two and risking drift.
+    t.travelTotal = t.end - t.start;
+    t.travelDone = Math.max(0, Math.min(t.travelTotal, now - t.start));
+    t.travelLeft = Math.max(0, Math.min(t.travelTotal, t.end - now));
     return t;
   }
 
@@ -351,8 +357,8 @@
     var md = window.MAPDATA;
     var parts = [];
     parts.push('<defs>' +
-      '<radialGradient id="glow"><stop offset="0%" stop-color="#ff5fa2" stop-opacity=".55"/>' +
-      '<stop offset="100%" stop-color="#ff5fa2" stop-opacity="0"/></radialGradient>' +
+      '<radialGradient id="glow"><stop offset="0%" stop-color="#ff4f9e" stop-opacity=".38"/>' +
+      '<stop offset="100%" stop-color="#ff4f9e" stop-opacity="0"/></radialGradient>' +
       '<filter id="soft"><feGaussianBlur stdDeviation="6"/></filter>' +
       '</defs>');
 
@@ -367,17 +373,17 @@
       var y = project(lat, LON0)[1];
       g += '<line x1="0" y1="' + y.toFixed(1) + '" x2="' + W + '" y2="' + y.toFixed(1) + '"/>';
     }
-    parts.push('<g stroke="rgba(255,150,205,.10)" stroke-width="1">' + g + '</g>');
+    parts.push('<g stroke="rgba(150,110,175,.16)" stroke-width="1">' + g + '</g>');
 
     var land = md.countries.map(function (c) {
       return c[1].map(ringPath).join('');
     }).join('');
-    parts.push('<path d="' + land + '" fill="#2f1b3b" stroke="#4d2d60" stroke-width="1.1" stroke-linejoin="round"/>');
+    parts.push('<path d="' + land + '" fill="#ffe4f1" stroke="#f2b8d8" stroke-width="1.1" stroke-linejoin="round"/>');
 
     var states = md.states.map(function (c) {
       return c[1].map(ringPath).join('');
     }).join('');
-    parts.push('<path d="' + states + '" fill="none" stroke="#4d2d60" stroke-width="0.7" opacity=".55"/>');
+    parts.push('<path d="' + states + '" fill="none" stroke="#f2b8d8" stroke-width="0.7" opacity=".9"/>');
 
     return parts.join('');
   }
@@ -394,6 +400,12 @@
     var labels = [];
     var now = state.now;
 
+    // The SVG scales to the container, so anything sized in user units shrinks
+    // with it — at phone width the airport codes land around 5px and become
+    // unreadable. Scale markers and text back up as the viewport narrows.
+    var vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1200;
+    var k = Math.max(1, 900 / Math.max(320, vw));
+
     fl.forEach(function (f) {
       var A = AIRPORTS[f.from], B = AIRPORTS[f.to];
       var isCurrent = state.phase === 'flight' && state.flight === f;
@@ -404,12 +416,12 @@
 
       // remaining portion — dashed
       if (frac < 1) {
-        out.push('<path d="' + gcPath(A, B, frac, 1) + '" fill="none" stroke="#ff5fa2" ' +
-          'stroke-width="3" stroke-dasharray="9 10" opacity=".5" stroke-linecap="round"/>');
+        out.push('<path d="' + gcPath(A, B, frac, 1) + '" fill="none" stroke="#ff4f9e" ' +
+          'stroke-width="3" stroke-dasharray="9 10" opacity=".65" stroke-linecap="round"/>');
       }
       // completed portion — solid, brighter while it's the active leg
       if (frac > 0) {
-        var col = isCurrent ? '#ffa6d4' : '#3ddc97';
+        var col = isCurrent ? '#d81b76' : '#9b5cff';
         out.push('<path d="' + gcPath(A, B, 0, frac) + '" fill="none" stroke="' + col + '" ' +
           'stroke-width="4.5" opacity=".95" stroke-linecap="round"/>');
       }
@@ -425,12 +437,14 @@
         var visited = FLIGHTS.some(function (g) {
           return g.trip === trip && ((g.to === code && now >= g.arrMs) || (g.from === code && now >= g.depMs));
         });
-        out.push('<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="7" fill="' +
-          (visited ? '#3ddc97' : '#22122c') + '" stroke="#f8eaf4" stroke-width="2.5"/>');
+        out.push('<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + (7 * k).toFixed(1) +
+          '" fill="' + (visited ? '#9b5cff' : '#ffffff') + '" stroke="#8a3a63" stroke-width="' +
+          (2.5 * k).toFixed(1) + '"/>');
         var flip = code === 'SFO' || code === 'WLG' || code === 'AKL';
-        labels.push('<text x="' + (p[0] + (flip ? -13 : 13)).toFixed(1) + '" y="' + (p[1] + 5).toFixed(1) +
-          '" fill="#f8eaf4" font-size="21" font-weight="700" text-anchor="' + (flip ? 'end' : 'start') +
-          '" paint-order="stroke" stroke="#160b1f" stroke-width="5" stroke-linejoin="round">' + code + '</text>');
+        labels.push('<text x="' + (p[0] + (flip ? -13 : 13) * k).toFixed(1) + '" y="' + (p[1] + 5 * k).toFixed(1) +
+          '" fill="#46203a" font-size="' + (21 * k).toFixed(1) + '" font-weight="700" text-anchor="' +
+          (flip ? 'end' : 'start') + '" paint-order="stroke" stroke="#ffffff" stroke-width="' +
+          (5 * k).toFixed(1) + '" stroke-linejoin="round">' + code + '</text>');
       });
     });
     out.push(labels.join(''));
@@ -448,14 +462,15 @@
       var p2 = project(ahead.lat, ahead.lon);
       var ang = Math.atan2(p2[1] - p[1], p2[0] - p[0]) * 180 / Math.PI + 90;
 
-      out.push('<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="70" fill="url(#glow)"/>');
-      out.push('<g transform="translate(' + p[0].toFixed(1) + ',' + p[1].toFixed(1) + ') rotate(' + ang.toFixed(1) + ')">' +
+      out.push('<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + (70 * k).toFixed(1) + '" fill="url(#glow)"/>');
+      out.push('<g transform="translate(' + p[0].toFixed(1) + ',' + p[1].toFixed(1) + ') rotate(' + ang.toFixed(1) + ') scale(' + k.toFixed(2) + ')">' +
         '<path d="M0,-19 L5,-5 L20,4 L20,9 L4,5 L3,15 L9,20 L9,23 L0,20 L-9,23 L-9,20 L-3,15 L-4,5 L-20,9 L-20,4 L-5,-5 Z" ' +
-        'fill="#ffffff" stroke="#160b1f" stroke-width="1.6" stroke-linejoin="round"/></g>');
+        'fill="#d81b76" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/></g>');
     } else if (state.trip === trip && (state.phase === 'layover' || state.phase === 'gap' || state.phase === 'pre' || state.phase === 'done')) {
       var pa = project(state.pos.lat, state.pos.lon);
-      out.push('<circle cx="' + pa[0].toFixed(1) + '" cy="' + pa[1].toFixed(1) + '" r="52" fill="url(#glow)"/>');
-      out.push('<circle cx="' + pa[0].toFixed(1) + '" cy="' + pa[1].toFixed(1) + '" r="10" fill="#ffc857" stroke="#160b1f" stroke-width="2.5"/>');
+      out.push('<circle cx="' + pa[0].toFixed(1) + '" cy="' + pa[1].toFixed(1) + '" r="' + (52 * k).toFixed(1) + '" fill="url(#glow)"/>');
+      out.push('<circle cx="' + pa[0].toFixed(1) + '" cy="' + pa[1].toFixed(1) + '" r="' + (10 * k).toFixed(1) +
+        '" fill="#ffb020" stroke="#ffffff" stroke-width="' + (2.5 * k).toFixed(1) + '"/>');
     }
 
     svg.innerHTML = out.join('');
@@ -548,6 +563,17 @@
       });
     }
 
+    var lastStop = AIRPORTS[tripFlights(trip)[t.count - 1].to].name;
+    out.push({
+      label: 'Travel time so far', hl: true,
+      value: fmtDur(t.travelDone),
+      note: 'flights + layovers, door to door'
+    });
+    out.push({
+      label: 'Travel time remaining', hl: true,
+      value: fmtDur(t.travelLeft),
+      note: t.travelLeft === 0 ? 'she made it' : 'until she reaches ' + lastStop
+    });
     out.push({
       label: 'Flight time so far',
       value: fmtDur(t.flightDone),
