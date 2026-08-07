@@ -62,16 +62,18 @@ never go blank over the Pacific.
 
     npx wrangler pages deploy <folder> --project-name where-is-emily --branch main
 
-To keep real tracks after a flight lands, create a Workers KV namespace and bind
-it to the Pages project with the exact binding name `FLIGHT_TRAILS` in both
-production and preview. For example:
+Real tracks are kept after a flight lands in a Workers KV namespace bound as
+`FLIGHT_TRAILS`. It already exists and is declared in `wrangler.jsonc`, so a
+deploy carries the binding with it; there is nothing to click in the dashboard.
+To recreate it from scratch:
 
     npx wrangler kv namespace create FLIGHT_TRAILS
 
-The namespace ID belongs in the Cloudflare binding configuration, not in this
-repository. The site still works without the binding, but completed legs then
-fall back to great-circle lines. The `/api/live` function saves each leg once
-after the itinerary enters its layover and returns all saved trails to the map.
+and put the returned id in `wrangler.jsonc`. The id is an account-scoped
+identifier, not a secret. The site still works without the binding, but
+completed legs then fall back to great-circle lines. The `/api/live` function
+saves each leg once after the itinerary enters its layover and returns all
+saved trails to the map.
 
 Only `index.html`, `app.js`, `robots.txt`, `data/` and `functions/` need to ship.
 

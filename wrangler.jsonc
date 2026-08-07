@@ -1,0 +1,12 @@
+{
+  // Pages config, needed only so the KV binding that stores completed flight
+  // trails is declared in the repo rather than clicked into the dashboard.
+  // The namespace id is an account-scoped identifier, not a secret: reading or
+  // writing it still requires a Cloudflare API token for this account.
+  "name": "where-is-emily",
+  "compatibility_date": "2026-08-06",
+  "pages_build_output_dir": ".",
+  "kv_namespaces": [
+    { "binding": "FLIGHT_TRAILS", "id": "64bc2ba6061c4f79b9a79a93fdea8487" }
+  ]
+}

@@ -780,17 +780,38 @@
    *   2. data/live.json — a file a cron may be committing, for plain static
    *      hosts where no function exists.
    * If neither answers, dead reckoning from the schedule carries the map. */
+  /* After landing the airframe stops answering to the old callsign, so the
+   * only way to finalize a leg is its ADS-B hex. Keeping it in localStorage
+   * means a page opened fresh during the layover can still finalize, instead
+   * of only a tab that happened to stay open through touchdown. */
+  var HEX_KEY = 'wie-hex';
+
+  function hexStore() {
+    try { return JSON.parse(localStorage.getItem(HEX_KEY)) || {}; } catch (e) { return {}; }
+  }
+
+  function rememberHex(leg, hex) {
+    if (!/^[0-9a-f]{6}$/i.test(hex || '')) return;
+    try {
+      var all = hexStore();
+      if (all[leg] === hex) return;
+      all[leg] = hex;
+      localStorage.setItem(HEX_KEY, JSON.stringify(all));
+    } catch (e) { /* private mode or full quota — the live path still works */ }
+  }
+
   function fetchLive() {
     var state = computeState(Date.now());
     if (state.phase === 'pre') return;      // nothing airborne to ask about
     var f = state.flight;
     var finalizing = state.phase !== 'flight';
     var previous = liveData && liveData.flights && liveData.flights[f.n];
+    var hex = (previous && previous.hex) || hexStore()[f.n];
     var query = 'api/live?cs=' + f.callsigns.join(',') +
       '&leg=' + encodeURIComponent(f.n) +
       '&arr=' + encodeURIComponent(f.arrMs) +
       '&finalize=' + (finalizing ? '1' : '0') +
-      (previous && /^[0-9a-f]{6}$/i.test(previous.hex || '') ? '&hex=' + previous.hex : '') +
+      (/^[0-9a-f]{6}$/i.test(hex || '') ? '&hex=' + hex : '') +
       '&t=' + Date.now();
 
     fetch(query, { cache: 'no-store' })
@@ -806,6 +827,7 @@
         }
         // found:false is the ordinary mid-ocean answer, not a failure.
         if (!j || j.found === false || typeof j.lat !== 'number') return;
+        rememberHex(f.n, j.hex);
         var next = liveData || { updated: new Date().toISOString(), flights: {} };
         next.updated = new Date().toISOString();
         next.flights = next.flights || {};
@@ -819,7 +841,14 @@
   function fetchLiveFile() {
     fetch('data/live.json?t=' + Date.now(), { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { if (j) { liveData = j; render(); } })
+      .then(function (j) {
+        if (!j) return;
+        // Keep any saved trails already fetched from the API — the static
+        // file has no idea about them and would otherwise blank the map.
+        if (liveData && liveData.trails && !j.trails) j.trails = liveData.trails;
+        liveData = j;
+        render();
+      })
       .catch(function () { /* neither source available — schedule mode */ });
   }
 

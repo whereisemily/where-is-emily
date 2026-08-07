@@ -56,6 +56,11 @@ function validHex(hex) {
   return typeof hex === 'string' && /^[0-9a-f]{6}$/i.test(hex);
 }
 
+/** On the ground or low enough to be a departure/arrival rather than cruise. */
+function low(alt) {
+  return alt === 'ground' || (typeof alt === 'number' && alt < 500);
+}
+
 /**
  * The trace covers the whole day and several flights of the same airframe.
  * Everything after the last on-ground point is the flight it is on now.
@@ -73,10 +78,16 @@ function trailFromTrace(feed, completed = false) {
     if (end < 1) return null;
   }
 
+  // A live trace ends at cruise, but a completed one ends on final approach,
+  // which is itself below the departure threshold. Step back over that landing
+  // tail first, otherwise the search below stops on the arrival and the whole
+  // leg collapses to a couple of points over the destination runway.
+  let i = end;
+  while (i > 0 && low(pts[i][3])) i--;
+
   let start = 0;
-  for (let i = end; i >= 0; i--) {
-    const alt = pts[i][3];
-    if (alt === 'ground' || (typeof alt === 'number' && alt < 500)) { start = i; break; }
+  for (; i >= 0; i--) {
+    if (low(pts[i][3])) { start = i; break; }
   }
 
   const segEnd = completed && end < pts.length - 1 ? end + 1 : end;
