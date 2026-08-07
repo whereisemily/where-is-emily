@@ -31,7 +31,7 @@ never go blank over the Pacific.
 | `data/mapdata.js` | Natural Earth 110m coastlines + US states, simplified |
 | `data/live.json` | Latest ADS-B fix, written by the Action |
 | `scripts/track.js` | The poller |
-| `.github/workflows/track.yml` | The 10-minute cron |
+| `.github/workflows/track.yml` | Manual fallback poller |
 
 ## Notes for future editing
 

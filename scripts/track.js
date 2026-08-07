@@ -1,5 +1,6 @@
 /* Polls adsb.lol for whichever of Emily's flights is currently airborne and
- * writes data/live.json. Run by .github/workflows/track.yml every 5 minutes.
+ * writes data/live.json. Run by hand from .github/workflows/track.yml; the
+ * schedule is gone now that /api/live answers from Cloudflare on every load.
  *
  * adsb.lol sends no CORS headers, so the browser can't call it directly — this
  * runs server-side and commits the result, which the page then reads

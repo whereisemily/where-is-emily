@@ -1,12 +1,10 @@
 name: Track Emily
 
+# Manual only. /api/live queries adsb.lol from Cloudflare on every page load, so
+# data/live.json is just the fallback for a static host with no Functions - the
+# cron only produced failing runs and Pages rebuilds nobody needed. Run this by
+# hand if the Function ever breaks and the committed file needs refreshing.
 on:
-  schedule:
-    # Every 10 minutes, not GitHub's 5-minute minimum: each commit here triggers
-    # a Pages rebuild, and Pages soft-limits builds to 10/hour. 6/hour leaves
-    # headroom. The page dead-reckons forward from the last fix, so the aircraft
-    # keeps moving between polls rather than sitting frozen.
-    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 # Only one tracker run at a time, so two runs can't race on the same commit.
