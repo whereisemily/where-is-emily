@@ -22,6 +22,15 @@
   var liveData = null;      // parsed data/live.json
   var selectedTrip = null;  // 'out' | 'home' — null until first auto-pick
 
+  /* Real touchdown time for a leg the API has finalized, scheduled arrival
+   * otherwise. Used for "landed X ago" and layover lengths, which are about
+   * what actually happened. Phase decisions and the ticketed times in the
+   * timeline deliberately stay on the schedule. */
+  function arrivedMs(f) {
+    var real = liveData && liveData.landings && liveData.landings[f.n];
+    return typeof real === 'number' ? real : f.arrMs;
+  }
+
   // ---------------------------------------------------------------- geometry
 
   var LON0 = -160;          // centre the frame on the Pacific so the route never
@@ -308,9 +317,9 @@
 
       if (i > 0) {
         var prev = fl[i - 1];
-        var gap = f.depMs - prev.arrMs;
+        var gap = f.depMs - arrivedMs(prev);
         t.layoverTotal += gap;
-        t.layoverDone += Math.max(0, Math.min(gap, now - prev.arrMs));
+        t.layoverDone += Math.max(0, Math.min(gap, now - arrivedMs(prev)));
       }
     });
 
@@ -543,14 +552,14 @@
         note: state.airport.region + ' · ' + state.flight.to
       });
       out.push({
-        label: 'Next flight boards in', hl: true,
+        label: 'Next flight departs in', hl: true,
         value: fmtDur(FLIGHTS[state.nextIndex].depMs - state.now),
         note: 'onward to ' + AIRPORTS[FLIGHTS[state.nextIndex].to].name
       });
       out.push({
         label: 'Sitting here',
-        value: fmtDur(state.now - state.flight.arrMs),
-        note: 'of a ' + fmtDur(FLIGHTS[state.nextIndex].depMs - state.flight.arrMs) + ' layover'
+        value: fmtDur(state.now - arrivedMs(state.flight)),
+        note: 'of a ' + fmtDur(FLIGHTS[state.nextIndex].depMs - arrivedMs(state.flight)) + ' layover'
       });
     } else if (state.phase === 'gap' && isCurrentTrip) {
       out.push({
@@ -636,11 +645,11 @@
     fl.forEach(function (f, i) {
       if (i > 0) {
         var prev = fl[i - 1];
-        var gap = f.depMs - prev.arrMs;
-        var active = now >= prev.arrMs && now < f.depMs;
+        var gap = f.depMs - arrivedMs(prev);
+        var active = now >= arrivedMs(prev) && now < f.depMs;
         html += '<div class="layover-row">' +
           (active ? '⏱ <b>Now:</b> ' : '') + fmtDur(gap) + ' layover in <b>' + AIRPORTS[prev.to].name + '</b>' +
-          (active ? ' — ' + fmtDur(f.depMs - now) + ' until boarding' : '') +
+          (active ? ' — ' + fmtDur(f.depMs - now) + ' until departure' : '') +
           '</div>';
       }
 
@@ -680,14 +689,14 @@
       case 'layover':
         return {
           status: 'Layover in ' + state.airport.name,
-          sub: 'Landed ' + fmtDur(state.now - f.arrMs) + ' ago · next up <b>' +
+          sub: 'Landed ' + fmtDur(state.now - arrivedMs(f)) + ' ago · next up <b>' +
                AIRPORTS[FLIGHTS[state.nextIndex].to].name +
                '</b> in <b>' + fmtDur(FLIGHTS[state.nextIndex].depMs - state.now) + '</b>'
         };
       case 'gap':
         return {
           status: 'In ' + state.airport.name + ', New Zealand',
-          sub: 'Arrived ' + fmtDate(f.arrMs, AIRPORTS[f.to].tz) + ' · flies home in <b>' +
+          sub: 'Arrived ' + fmtDate(arrivedMs(f), AIRPORTS[f.to].tz) + ' · flies home in <b>' +
                fmtDur(FLIGHTS[state.nextIndex].depMs - state.now) + '</b>'
         };
       case 'pre':
@@ -698,7 +707,7 @@
       default:
         return {
           status: 'Home in ' + AIRPORTS[f.to].name + ' 🏡',
-          sub: 'Landed ' + fmtDate(f.arrMs, AIRPORTS[f.to].tz) + ' · the whole trip is done'
+          sub: 'Landed ' + fmtDate(arrivedMs(f), AIRPORTS[f.to].tz) + ' · the whole trip is done'
         };
     }
   }
@@ -823,6 +832,7 @@
         if (j && j.trails) {
           liveData = liveData || { flights: {} };
           liveData.trails = j.trails;
+          liveData.landings = j.landings || {};
           render();
         }
         // found:false is the ordinary mid-ocean answer, not a failure.
@@ -845,7 +855,10 @@
         if (!j) return;
         // Keep any saved trails already fetched from the API — the static
         // file has no idea about them and would otherwise blank the map.
-        if (liveData && liveData.trails && !j.trails) j.trails = liveData.trails;
+        if (liveData && liveData.trails && !j.trails) {
+          j.trails = liveData.trails;
+          j.landings = liveData.landings;
+        }
         liveData = j;
         render();
       })

@@ -64,6 +64,10 @@ function low(alt) {
 /**
  * The trace covers the whole day and several flights of the same airframe.
  * Everything after the last on-ground point is the flight it is on now.
+ *
+ * Returns { trail, landedAt } — landedAt is the real touchdown time, and only
+ * meaningful for a completed leg, where the segment ends on the runway rather
+ * than wherever the aircraft happens to be right now.
  */
 function trailFromTrace(feed, completed = false) {
   const pts = Array.isArray(feed && feed.trace) ? feed.trace : [];
@@ -106,7 +110,13 @@ function trailFromTrace(feed, completed = false) {
   if (out.length === 0 || out[out.length - 1][0] !== tail[0] || out[out.length - 1][1] !== tail[1]) {
     out.push(tail);
   }
-  return out.length >= 2 ? out : null;
+  if (out.length < 2) return null;
+
+  // Trace times are offsets in seconds from the file's own epoch.
+  const landedAt = completed && typeof feed.timestamp === 'number'
+    ? Math.round((feed.timestamp + last[0]) * 1000)
+    : null;
+  return { trail: out, landedAt };
 }
 
 async function fetchTrail(hex, trace, completed = false) {
@@ -126,18 +136,28 @@ async function fetchTrail(hex, trace, completed = false) {
 
 async function readSavedTrails(env, trace) {
   const store = env && env.FLIGHT_TRAILS;
-  if (!store) return {};
+  const empty = { trails: {}, landings: {} };
+  if (!store) return empty;
 
   try {
     const listed = await store.list({ prefix: TRAIL_PREFIX });
-    const entries = await Promise.all(listed.keys.map(async key => {
+    const saved = await Promise.all(listed.keys.map(async key => {
       const value = await store.get(key.name, 'json');
-      return value && Array.isArray(value.trail) ? [key.name.slice(TRAIL_PREFIX.length), value.trail] : null;
+      if (!value || !Array.isArray(value.trail)) return null;
+      return { leg: key.name.slice(TRAIL_PREFIX.length), value };
     }));
-    return Object.fromEntries(entries.filter(Boolean));
+
+    const out = { trails: {}, landings: {} };
+    for (const hit of saved.filter(Boolean)) {
+      out.trails[hit.leg] = hit.value.trail;
+      // Legs saved before touchdown times were recorded simply have none, and
+      // the page falls back to the scheduled arrival for those.
+      if (typeof hit.value.landedAt === 'number') out.landings[hit.leg] = hit.value.landedAt;
+    }
+    return out;
   } catch (e) {
     trace.push({ trailStore: String(e && e.message || e).slice(0, 100) });
-    return {};
+    return empty;
   }
 }
 
@@ -154,6 +174,7 @@ async function saveTrail(env, leg, trail, meta) {
     await store.put(key, JSON.stringify({
       leg,
       trail,
+      landedAt: typeof meta.landedAt === 'number' ? meta.landedAt : null,
       callsign: meta.callsign || null,
       hex: meta.hex || null,
       savedAt: new Date().toISOString()
@@ -196,10 +217,10 @@ export async function onRequest({ request, env }) {
   // Kept so a silent upstream refusal is diagnosable instead of looking
   // identical to "no receiver heard the aircraft".
   const trace = [];
-  const trails = await readSavedTrails(env, trace);
+  const { trails, landings } = await readSavedTrails(env, trace);
 
   async function response(body, status = 200) {
-    return json(Object.assign({ trails }, body), status, canFinalize ? 0 : 30);
+    return json(Object.assign({ trails, landings }, body), status, canFinalize ? 0 : 30);
   }
 
   if (canFinalize && trails[leg]) return response({ found: false, saved: true });
@@ -236,19 +257,22 @@ export async function onRequest({ request, env }) {
       }
 
       // A missing trail is not fatal — the page falls back to the great circle.
-      const trail = await fetchTrail(ac.hex, trace, canFinalize);
+      const flown = await fetchTrail(ac.hex, trace, canFinalize);
+      const trail = flown && flown.trail;
 
       // The trace file lags the live feed by a few minutes, so it stops short
       // of where the aircraft actually is. Extend it to the live fix, or the
       // drawn track ends in mid-air behind the plane icon.
-      if (trail) {
+      if (trail && !canFinalize) {
         const end = trail[trail.length - 1];
         const here = [+ac.lat.toFixed(3), +ac.lon.toFixed(3)];
         if (end[0] !== here[0] || end[1] !== here[1]) trail.push(here);
       }
 
-      if (canFinalize && trail && await saveTrail(env, leg, trail, { callsign: cs, hex: ac.hex })) {
+      if (canFinalize && trail &&
+          await saveTrail(env, leg, trail, { callsign: cs, hex: ac.hex, landedAt: flown.landedAt })) {
         trails[leg] = trail;
+        if (typeof flown.landedAt === 'number') landings[leg] = flown.landedAt;
       }
 
       return response({
@@ -274,9 +298,11 @@ export async function onRequest({ request, env }) {
   // parking. The browser supplies the last known hex from the same page load,
   // so the trace can still be fetched and finalized without trusting its path.
   if (canFinalize && validHex(fallbackHex) && !trails[leg]) {
-    const trail = await fetchTrail(fallbackHex, trace, true);
-    if (trail && await saveTrail(env, leg, trail, { callsign: candidates[0], hex: fallbackHex })) {
-      trails[leg] = trail;
+    const flown = await fetchTrail(fallbackHex, trace, true);
+    if (flown && await saveTrail(env, leg, flown.trail,
+        { callsign: candidates[0], hex: fallbackHex, landedAt: flown.landedAt })) {
+      trails[leg] = flown.trail;
+      if (typeof flown.landedAt === 'number') landings[leg] = flown.landedAt;
     }
   }
 
