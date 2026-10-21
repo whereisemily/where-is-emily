@@ -809,13 +809,35 @@
     } catch (e) { /* private mode or full quota — the live path still works */ }
   }
 
+  var completedTrailsRequested = false;
+
+  function fetchCompletedTrails() {
+    if (completedTrailsRequested) return;
+    completedTrailsRequested = true;
+    fetch('data/completed-trails.json')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        // An archive from this trip must not be used for a new itinerary.
+        if (!j || j.itineraryEnd !== FLIGHTS[FLIGHTS.length - 1].arr) return;
+        liveData = liveData || { flights: {} };
+        liveData.trails = Object.assign({}, liveData.trails, j.trails);
+        liveData.landings = Object.assign({}, liveData.landings, j.landings);
+        render();
+      })
+      .catch(function () { /* Keep the completed map in schedule mode. */ });
+  }
+
   function fetchLive() {
     var state = computeState(Date.now());
     if (state.phase === 'pre') return;      // nothing airborne to ask about
+    if (state.phase === 'done') {
+      clearInterval(livePoll);
+      fetchCompletedTrails();
+      return;
+    }
     var f = state.flight;
     var finalizing = state.phase !== 'flight';
     if (finalizing && liveData && liveData.trails && liveData.trails[f.n]) {
-      if (state.phase === 'done') clearInterval(livePoll);
       return;
     }
     var previous = liveData && liveData.flights && liveData.flights[f.n];
@@ -838,7 +860,6 @@
           // Retain loaded history if KV is temporarily unavailable.
           liveData.trails = Object.assign({}, liveData.trails, j.trails);
           liveData.landings = Object.assign({}, liveData.landings, j.landings);
-          if (state.phase === 'done' && liveData.trails[f.n]) clearInterval(livePoll);
           render();
         }
         // found:false is the ordinary mid-ocean answer, not a failure.
