@@ -15,6 +15,13 @@ const CALLSIGN = /^[A-Z0-9]{3,8}$/;
 const LEG = /^[A-Z0-9]{2,16}$/;
 const MAX_CANDIDATES = 4;
 const TRAIL_PREFIX = 'trail:';
+// Known storage keys, without a second copy of the flight schedule.
+const TRAIL_LEGS = ['UA6236', 'UA382', 'UA917', 'NZ425', 'NZ428', 'NZ28', 'UA2197', 'UA3426'];
+
+function trailCacheKey(request) {
+  // Ignore callsigns, timestamps and other query parameters for this cache.
+  return new Request(new URL('/_saved-trails-v1', request.url));
+}
 
 /* Several upstreams, tried in order.
  *
@@ -134,17 +141,23 @@ async function fetchTrail(hex, trace, completed = false) {
   }
 }
 
-async function readSavedTrails(env, trace) {
+async function readSavedTrails(env, trace, request) {
   const store = env && env.FLIGHT_TRAILS;
   const empty = { trails: {}, landings: {} };
   if (!store) return empty;
 
   try {
-    const listed = await store.list({ prefix: TRAIL_PREFIX });
-    const saved = await Promise.all(listed.keys.map(async key => {
-      const value = await store.get(key.name, 'json');
+    const cache = typeof caches !== 'undefined' ? caches.default : null;
+    if (cache) {
+      try {
+        const hit = await cache.match(trailCacheKey(request));
+        if (hit) return await hit.json();
+      } catch { /* A cache failure must not prevent a KV read. */ }
+    }
+    const saved = await Promise.all(TRAIL_LEGS.map(async leg => {
+      const value = await store.get(TRAIL_PREFIX + leg, 'json');
       if (!value || !Array.isArray(value.trail)) return null;
-      return { leg: key.name.slice(TRAIL_PREFIX.length), value };
+      return { leg, value };
     }));
 
     const out = { trails: {}, landings: {} };
@@ -154,6 +167,11 @@ async function readSavedTrails(env, trace) {
       // the page falls back to the scheduled arrival for those.
       if (typeof hit.value.landedAt === 'number') out.landings[hit.leg] = hit.value.landedAt;
     }
+    if (cache) {
+      try {
+        await cache.put(trailCacheKey(request), json(out, 200, 300));
+      } catch { /* Return the KV result even if the cache is unavailable. */ }
+    }
     return out;
   } catch (e) {
     trace.push({ trailStore: String(e && e.message || e).slice(0, 100) });
@@ -161,7 +179,7 @@ async function readSavedTrails(env, trace) {
   }
 }
 
-async function saveTrail(env, leg, trail, meta) {
+async function saveTrail(env, leg, trail, meta, request) {
   const store = env && env.FLIGHT_TRAILS;
   if (!store || !LEG.test(leg) || !Array.isArray(trail) || trail.length < 2) return false;
 
@@ -179,6 +197,10 @@ async function saveTrail(env, leg, trail, meta) {
       hex: meta.hex || null,
       savedAt: new Date().toISOString()
     }));
+    // Make the newly saved leg visible to the next request at this location.
+    if (typeof caches !== 'undefined' && caches.default) {
+      try { await caches.default.delete(trailCacheKey(request)); } catch { /* TTL bounds staleness. */ }
+    }
     return true;
   } catch {
     // KV is an enhancement; a binding outage must not hide live position data.
@@ -217,7 +239,7 @@ export async function onRequest({ request, env }) {
   // Kept so a silent upstream refusal is diagnosable instead of looking
   // identical to "no receiver heard the aircraft".
   const trace = [];
-  const { trails, landings } = await readSavedTrails(env, trace);
+  const { trails, landings } = await readSavedTrails(env, trace, request);
 
   async function response(body, status = 200) {
     return json(Object.assign({ trails, landings }, body), status, canFinalize ? 0 : 30);
@@ -270,7 +292,7 @@ export async function onRequest({ request, env }) {
       }
 
       if (canFinalize && trail &&
-          await saveTrail(env, leg, trail, { callsign: cs, hex: ac.hex, landedAt: flown.landedAt })) {
+          await saveTrail(env, leg, trail, { callsign: cs, hex: ac.hex, landedAt: flown.landedAt }, request)) {
         trails[leg] = trail;
         if (typeof flown.landedAt === 'number') landings[leg] = flown.landedAt;
       }
@@ -300,7 +322,7 @@ export async function onRequest({ request, env }) {
   if (canFinalize && validHex(fallbackHex) && !trails[leg]) {
     const flown = await fetchTrail(fallbackHex, trace, true);
     if (flown && await saveTrail(env, leg, flown.trail,
-        { callsign: candidates[0], hex: fallbackHex, landedAt: flown.landedAt })) {
+        { callsign: candidates[0], hex: fallbackHex, landedAt: flown.landedAt }, request)) {
       trails[leg] = flown.trail;
       if (typeof flown.landedAt === 'number') landings[leg] = flown.landedAt;
     }

@@ -814,6 +814,10 @@
     if (state.phase === 'pre') return;      // nothing airborne to ask about
     var f = state.flight;
     var finalizing = state.phase !== 'flight';
+    if (finalizing && liveData && liveData.trails && liveData.trails[f.n]) {
+      if (state.phase === 'done') clearInterval(livePoll);
+      return;
+    }
     var previous = liveData && liveData.flights && liveData.flights[f.n];
     var hex = (previous && previous.hex) || hexStore()[f.n];
     var query = 'api/live?cs=' + f.callsigns.join(',') +
@@ -831,8 +835,10 @@
       .then(function (j) {
         if (j && j.trails) {
           liveData = liveData || { flights: {} };
-          liveData.trails = j.trails;
-          liveData.landings = j.landings || {};
+          // Retain loaded history if KV is temporarily unavailable.
+          liveData.trails = Object.assign({}, liveData.trails, j.trails);
+          liveData.landings = Object.assign({}, liveData.landings, j.landings);
+          if (state.phase === 'done' && liveData.trails[f.n]) clearInterval(livePoll);
           render();
         }
         // found:false is the ordinary mid-ocean answer, not a failure.
@@ -874,6 +880,6 @@
 
   render();
   setInterval(render, 1000);
+  var livePoll = setInterval(fetchLive, 60000);
   fetchLive();
-  setInterval(fetchLive, 60000);
 })();
